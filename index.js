@@ -1,101 +1,32 @@
 const { Client } = require('pg');
-const fs = require('fs');
 
-// 1. Configurações de Conexão com PostgreSQL
-// Para fins de teste no ambiente, usaremos um banco de dados local.
-// O usuário deverá adaptar estas credenciais para o seu ambiente PgAdmin/PostgreSQL.
-const client = new Client({
+const configBanco = {
     host: 'localhost',
     port: 5432,
-    database: 'Trabalho_BD', // Usaremos o banco de dados padrão 'postgres' para criar a tabela
+    database: 'Trabalho_BD', 
     user: 'postgres',
-    password: 'traficante123?' // Senha padrão para o PostgreSQL em muitos ambientes de desenvolvimento
-});
+    password: 'traficante123?' 
+};
 
-// 2. Função principal para descobrir as dependências funcionais
-async function discoverFunctionalDependencies() {
-    try {
-        // Conectar ao banco de dados
-        await client.connect();
-        console.log("Conectado ao banco de dados PostgreSQL.");
+const nomeTabela = 'carros'; 
 
-        // Configurar o banco de dados (criar tabela e inserir dados)
-        await setupDatabase();
-
-        console.log("\nIniciando a descoberta de Dependências Funcionais...");
-
-        // A tabela é 'carros'
-        const tableName = 'carros';
-        
-        // Obter a lista de colunas
-        const columns = await getColumns(tableName);
-        if (columns.length === 0) {
-            console.log("Nenhuma coluna encontrada na tabela.");
-            await client.end();
+// Função principal
+function descobrirDependencias() {
+    const client = new Client(configBanco);
+    
+    client.connect(function(err) {
+        if (err) {
+            console.log("Erro ao conectar:", err.message);
             return;
         }
-        console.log("Colunas:", columns);
-
-        const validDependencies = [];
-
-        // Gerar todas as combinações possíveis de atributos para o lado esquerdo (LE)
-        // 1, 2 ou 3 atributos
-        for (let numAttributes = 1; numAttributes <= 3; numAttributes++) {
-            const combinations = generateCombinations(columns, numAttributes);
-            
-            for (const le of combinations) {
-                // Para cada combinação do lado esquerdo (LE), testar cada atributo do lado direito (LD)
-                for (const ld of columns) {
-                    // O lado direito não pode ser um atributo do lado esquerdo
-                    if (!le.includes(ld)) {
-                        const isFunctionalDependency = await checkFunctionalDependency(tableName, le, ld);
-                        
-                        if (isFunctionalDependency) {
-                            validDependencies.push({ le: le.join(', '), ld: ld });
-                        }
-                    }
-                }
-            }
-        }
-
-        console.log("\n==================================================");
-        console.log("Descoberta de Dependências Funcionais Concluída!");
-        console.log("Tabela: " + tableName);
-        console.log("Total de Dependências Válidas Encontradas: " + validDependencies.length);
-        console.log("==================================================");
         
-        validDependencies.forEach(dep => {
-            console.log(`[${dep.le}] -> [${dep.ld}]`);
-        });
-
-    } catch (err) {
-        console.error("Erro durante a execução:", err.message);
-    } finally {
-        // Fechar a conexão com o banco de dados
-        await client.end();
-        console.log("\nDesconectado do banco de dados.");
-    }
+        console.log("Conectado ao banco de dados!");
+        
+        buscarColunas(client, nomeTabela);
+    });
 }
 
-// 3. Configurar o banco de dados (criar tabela e inserir dados)
-async function setupDatabase() {
-const sql = fs.readFileSync('./data/database.sql', 'utf8');
-
-    // Adicionar comando para dropar a tabela se ela existir, para garantir um estado limpo
-    const dropTableSql = 'DROP TABLE IF EXISTS carros;';
-    
-    try {
-        await client.query(dropTableSql);
-        await client.query(sql);
-        console.log("Tabela 'carros' configurada e populada.");
-    } catch (err) {
-        console.error("Erro ao configurar o banco de dados:", err.message);
-        throw err; // Propagar o erro para interromper a execução
-    }
-}
-
-// Função auxiliar para obter a lista de colunas da tabela
-async function getColumns(tableName) {
+function buscarColunas(client, nomeTabela) {
     const sql = `
         SELECT column_name 
         FROM information_schema.columns 
@@ -103,58 +34,165 @@ async function getColumns(tableName) {
         ORDER BY ordinal_position;
     `;
     
-    try {
-        const result = await client.query(sql, [tableName]);
-        return result.rows.map(row => row.column_name);
-    } catch (err) {
-        console.error("Erro ao obter colunas:", err.message);
-        return [];
-    }
-}
-
-// Função auxiliar para gerar combinações (subconjuntos) de um array
-function generateCombinations(array, size) {
-    const results = [];
-    function backtrack(start, currentCombination) {
-        if (currentCombination.length === size) {
-            results.push([...currentCombination]);
+    client.query(sql, [nomeTabela], function(err, result) {
+        if (err) {
+            console.error("Erro ao buscar colunas:", err.message);
+            client.end();
             return;
         }
-        for (let i = start; i < array.length; i++) {
-            currentCombination.push(array[i]);
-            backtrack(i + 1, currentCombination);
-            currentCombination.pop();
+        
+        if (result.rows.length === 0) {
+            console.log("Não achei colunas na tabela!");
+            client.end();
+            return;
+        }
+        
+        const columns = [];
+        for (let i = 0; i < result.rows.length; i++) {
+            columns.push(result.rows[i].column_name);
+        }
+        
+        console.log("Colunas encontradas:", columns);
+        buscarDependencias(client, nomeTabela, columns);
+    });
+}
+
+function buscarDependencias(client, nomeTabela, columns) {
+    const dependenciasValidas = [];
+    let totalTestes = 0;
+    let testesCompletos = 0;
+    
+    function verificarSeTerminou() {
+        testesCompletos++;
+        if (testesCompletos === totalTestes) {
+            mostrarResultados(client, nomeTabela, dependenciasValidas);
         }
     }
-    backtrack(0, []);
-    return results;
+    
+    console.log("\nProcurando dependências funcionais...");
+
+    // Testar com 1 coluna na esquerda
+    for (let i = 0; i < columns.length; i++) {
+        const esquerda = [columns[i]];
+        
+        for (let j = 0; j < columns.length; j++) {
+            const direita = columns[j];
+            
+            // Não testar uma coluna com ela mesma
+            if (!esquerda.includes(direita)) {
+                totalTestes++;
+                checaDependenciaFuncional(client, nomeTabela, esquerda, direita, function(ehValida) {
+                    if (ehValida) {
+                        dependenciasValidas.push({ 
+                            esquerda: esquerda.join(', '), 
+                            direita: direita 
+                        });
+                    }
+                    verificarSeTerminou();
+                });
+            }
+        }
+    }
+    
+    // Testar com 2 colunas na esquerda
+    for (let i = 0; i < columns.length; i++) {
+        for (let j = i + 1; j < columns.length; j++) {
+            const esquerda = [columns[i], columns[j]];
+            
+            for (let k = 0; k < columns.length; k++) {
+                const direita = columns[k];
+                
+                // Não testar se a direita já está na esquerda
+                if (!esquerda.includes(direita)) {
+                    totalTestes++;
+                    checaDependenciaFuncional(client, nomeTabela, esquerda, direita, function(ehValida) {
+                        if (ehValida) {
+                            dependenciasValidas.push({ 
+                                esquerda: esquerda.join(', '), 
+                                direita: direita 
+                            });
+                        }
+                        verificarSeTerminou();
+                    });
+                }
+            }
+        }
+    }
+    
+    // Testar com 3 colunas na esquerda
+    for (let i = 0; i < columns.length; i++) {
+        for (let j = i + 1; j < columns.length; j++) {
+            for (let k = j + 1; k < columns.length; k++) {
+                const esquerda = [columns[i], columns[j], columns[k]];
+                
+                for (let l = 0; l < columns.length; l++) {
+                    const direita = columns[l];
+                    
+                    // Não testar se a direita já está na esquerda
+                    if (!esquerda.includes(direita)) {
+                        totalTestes++;
+                        checaDependenciaFuncional(client, nomeTabela, esquerda, direita, function(ehValida) {
+                            if (ehValida) {
+                                dependenciasValidas.push({ 
+                                    esquerda: esquerda.join(', '), 
+                                    direita: direita 
+                                });
+                            }
+                            verificarSeTerminou();
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    console.log("Total de testes a fazer:", totalTestes);
 }
 
-// 4. A Lógica da Query de Verificação (X -> Y)
-// Se para cada grupo de valores distintos de X, houver apenas 1 valor distinto de Y, a dependência é válida.
-// Se houver algum grupo de X com mais de 1 valor distinto de Y, a dependência é violada.
-async function checkFunctionalDependency(tableName, le, ld) {
-    const leString = le.join(', ');
+function checaDependenciaFuncional(client, nomeTabela, esquerda, direita, callback) {
+    const leString = esquerda.join(', ');
     
-    // A query busca grupos de LE (lado esquerdo) que possuem mais de um valor distinto de LD (lado direito).
-    // Se a query retornar 0 linhas, significa que não houve violação, e a dependência é válida.
     const sql = `
-        SELECT ${leString}, COUNT(DISTINCT ${ld}) as distinct_ld_count
-        FROM ${tableName}
+        SELECT ${leString}, COUNT(DISTINCT ${direita}) as distinct_ld_count
+        FROM ${nomeTabela}
         GROUP BY ${leString}
-        HAVING COUNT(DISTINCT ${ld}) > 1
+        HAVING COUNT(DISTINCT ${direita}) > 1
     `;
 
-    try {
-        const result = await client.query(sql);
-        // Se result.rows.length for 0, a dependência é válida (não há violações)
-        return result.rows.length === 0;
-    } catch (err) {
-        console.error(`Erro ao verificar dependência [${leString}] -> [${ld}]:`, err.message);
-        // Em caso de erro na query, assumimos que a dependência não pode ser validada (ou é inválida)
-        return false;
-    }
+    client.query(sql, function(err, result) {
+        if (err) {
+            console.error(`Erro testando [${leString}] -> [${direita}]:`, err.message);
+            callback(false);
+        } else {
+            // Se não achou nenhum problema, a dependência é válida
+            if (result.rows.length === 0) {
+                callback(true);
+            } else {
+                callback(false);
+            }
+        }
+    });
 }
 
-// Executar a função principal
-discoverFunctionalDependencies();
+function mostrarResultados(client, nomeTabela, dependenciasValidas) {
+    // Mostrar resultados
+    console.log("\n=== RESULTADOS ===");
+    console.log("Tabela: " + nomeTabela);
+    console.log("Dependências válidas encontradas: " + dependenciasValidas.length);
+    console.log("==================");
+    
+    for (let i = 0; i < dependenciasValidas.length; i++) {
+        const dep = dependenciasValidas[i];
+        console.log("[" + dep.esquerda + "] -> [" + dep.direita + "]");
+    }
+    
+    client.end(function(err) {
+        if (err) {
+            console.log("Erro ao desconectar:", err.message);
+        } else {
+            console.log("\nEncerrando Conexão com o Banco de Dados.");
+        }
+    });
+}
+
+descobrirDependencias();
