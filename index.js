@@ -3,14 +3,13 @@ const { Client } = require('pg');
 const configBanco = {
     host: 'localhost',
     port: 5432,
-    database: 'Trabalho_BD', 
+    database: 'Roupas', 
     user: 'postgres',
     password: 'traficante123?' 
 };
 
 const nomeTabela = 'carros'; 
 
-// Função principal
 function descobrirDependencias() {
     const client = new Client(configBanco);
     
