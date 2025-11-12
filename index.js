@@ -3,7 +3,7 @@ const { Client } = require('pg');
 const configBanco = {
     host: 'localhost',
     port: 5432,
-    database: 'Roupas', 
+    database: 'Trabalho_BD', 
     user: 'postgres',
     password: 'traficante123?' 
 };
